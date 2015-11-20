@@ -1,0 +1,9 @@
+.DS_Store
+*.py[cod]
+*.old
+*.tmp
+*.mp4
+*.docx
+*.pdf
+
+video_discount.md
