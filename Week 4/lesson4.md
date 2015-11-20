@@ -11,7 +11,7 @@ While these workflows are standard, putting them together in a meaningful way is
 
 This week's topic concerns data analysis patterns for common tasks that make up the primary grind work of most MapReduce and Spark analytics. This week is meant to expose a variety of simple computations that build together to form more complex ones. By inspecting common patterns, Hadoop and Spark developers are more easily able to apply custom or specific algorithms and analytics in a heterogenous data environment.
 
-In particular, we'll take a look at how the combination of these techniques leads to last mile computing. Many of these patterns, filtering, aggregation, sampling, etc. are designed to reduce the amount of data output from a very large input data set. By moving the computation space from petabytes to a space that can fit into memory (perhaps 256 GB), more advanced analytics and machine learning can be performed.
+In particular, we’ll take a look at how the combination of these techniques constitute what is called &ldquo;last mile computing.&rdquo; Many of these patterns, filtering, aggregation, sampling, etc. are designed to reduce the amount of data output from a very large input data set. By moving the computation space from petabytes to a space that can fit into memory (perhaps 256 GB), more advanced analytics and machine learning can be performed.
 
 Topics for this week are as follows:
 
