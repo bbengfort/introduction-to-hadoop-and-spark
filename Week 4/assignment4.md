@@ -56,14 +56,14 @@ Please submit the following:
 
 1. All Python file(s) with the various mapper code
 2. All Python file(s) with the various reducer code
-3. A text file containing the output of your analysis (this will be the part-00000 file on HDFS when you execute it on the cluster).
+3. A text file containing the output of your analysis for the particular words mentioned above.
 
 #### Spark Submission
 
 If submitting a Spark application please submit the following:
 
 1. A Python file with the Spark application, submittable using `spark-submit`
-2. A text file containing the output of your analysis (this will be the part-00000 file on HDFS when you execute it on the cluster).
+2. A text file containing the output of your analysis for the particular words mentioned above.
 
 ### Dataset Info
 
@@ -109,14 +109,14 @@ Please submit the following:
 
 1. A Python file with the mapper code
 2. A Python file with the reducer code
-3. The first partition of your output (part-00000)
+3. A text file containing the results for the airports mentioned above.
 
 #### Spark Submission
 
 If submitting a Spark application please submit the following:
 
 1. A Python file with the Spark application, submittable using `spark-submit`
-2. The first partition of your output (part-00000)
+2. A text file containing the results for the airports mentioned above.
 
 ### Dataset Info
 

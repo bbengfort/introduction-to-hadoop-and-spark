@@ -1,105 +1,206 @@
 # Assignment Four Model Answers
 **Big Data with Hadoop Week Four Lesson**
 
-The following document describes model answers for questions one, two, and three in the homework assignment. Please compare your results and work with the work described here. Note that your answer may not be exactly the same as the answer below, but should be well represented by what is described.
+The following document describes model answers for questions one and two in the homework assignment. Please compare your results and work with the work described here. Note that your answer may not be exactly the same as the answer below, but should be well represented by what is described.
+
+Keep in mind that you only had to turn in one or the other of these assignments.
 
 ## Question One
 
 In this question you were required to submit the following:
 
-1. A Python file with the mapper code
-2. A Python file with the reducer code
-3. A test file containing the output of your analysis (this will be the part-00000 file on HDFS when you execute it on the cluster).
+1. All Python file(s) with the various mapper code
+2. All Python file(s) with the various reducer code
+3. A test file containing the output of your analysis for the specific words identified in the problem assignment.
 
-The Python mapper is as follows:
+In order to compute TF-IDF, you need to create a chained MapReduce job with three independent tasks: the computation of the term frequency, the computation of the document-term frequency, and finally the computation of TF-IDF.
 
-    N = 10788.0 # Number of documents, in float to make division work.
-    stopwords = 'stopwords.txt'
+The first Mapper breaks the input into (word, document) pairs along with a
+counter variable to sum the frequency of all terms.
 
-    class TermMapper(object):
+    import re
+    import sys
 
-        def __init__(self):
-            with open(stopwords, 'r') as excludes:
-                self.stopwords = set(line.strip() for line in excludes)
+    from framework import Mapper
 
-            self.curdoc = None
+    header = re.compile(r'^=+\s(\d+)\s=+$', re.I)
 
-        def __call__(self, key, value):
-            if value.startswith('='*34):
-                self.curdoc = int(value.strip("=").strip())
-            else:
-                for word in value.split():
-                    word = self.normalize(word)
-                    if word and not word in self.stopwords:
-                        yield (word, self.curdoc), 1
+    class TermFrequencyMapper(Mapper):
 
-        def normalize(self, word):
-            word = word.lower()
-            for char in string.punctuation:
-                word = word.replace(char, '')
-            return word
+        def __init__(self, *args, **kwargs):
+            super(TermFrequencyMapper, self).__init__(*args, **kwargs)
 
-    class UnitMapper(object):
+            self.stopwords = set()
+            self.tokenizer = re.compile(r'\W+')
+            self.current   = None
 
-        def __call__(self, key, value):
-            term, docid = key
-            yield term, (docid, value, 1)
+            # Read the stopwords from the text file.
+            with open('stopwords.txt') as stopwords:
+                for line in stopwords:
+                    self.stopwords.add(line.strip())
 
-    class IDFMapper(object):
+        def tokenize(self, text):
+            """
+            Tokenizes and normalizes a line of text (yields only non-stopwords
+            that aren't digits, punctuation, or empty strings).
+            """
+            for word in re.split(self.tokenizer, text):
+                if word and word not in self.stopwords and word.isalpha():
+                    yield word
 
-        def __call__(self, key, value):
-            term, docid = key
-            tf, n = value
-            idf = math.log(N/n)
-            yield (term, docid), idf*tf
+        def map(self):
+            for line in self:
 
-    class SumReducer(object):
+                if header.match(line):
+                    # We have a new document! Get the document id:
+                    self.current = header.match(line).groups()[0]
 
-        def __call__(self, key, values):
-            yield key, sum(values)
+                else:
+                    # Only emit words that have a document id.
+                    if self.current is None: continue
 
-    class BufferReducer(object):
+                    # Otherwise tokenize the line and emit every (word, docid).
+                    for word in self.tokenize(line):
+                        self.emit((word, self.current), 1)
 
-        def __call__(self, key, values):
-            term   = key
-            values = list(values)
-            n = sum(g[2] for g in values)
-            for g in values:
-                yield (term, g[0]), (g[1], n)
+    if __name__ == '__main__':
+        mapper = TermFrequencyMapper(sys.stdin)
+        mapper.map()
 
-    class IdentityReducer(object):
+The first reducer is a simple sum reducer:
 
-        def __call__(self, key, values):
-            for value in values:
-                yield key, value
+    import sys
+    from framework import Reducer
 
-    def runner(job):
-        job.additer(TermMapper, SumReducer, combiner=SumReducer)
-        job.additer(UnitMapper, BufferReducer)
-        job.additer(IDFMapper, IdentityReducer)
+    class SumReducer(Reducer):
 
-    def starter(prog):
-        excludes = prog.delopt("stopwords")
-        if excludes: prog.addopt("param", "stopwords="+excludes)
+        def reduce(self):
+            for key, values in self:
+                total = sum(int(count[1]) for count in values)
+                self.emit(key, total)
 
-    if __name__ == "__main__":
-        import dumbo
-        dumbo.main(runner, starter)
+    if __name__ == '__main__':
+        reducer = SumReducer(sys.stdin)
+        reducer.reduce()
 
-For this question, the reducer is just a simple mean reducer (one that you will probably use routinely in your Hadoop analytics):
+The next mapper performs a key space change to compute the document frequency.
 
+    import sys
 
+    from ast import literal_eval as make_tuple
+    from framework import Mapper
 
-To execute this code on Hadoop you would use the following command:
+    class DocumentTermsMapper(Mapper):
+
+        def map(self):
+            for line in self:
+                key, tf = line.split(self.sep)  # Split line into key, val parts
+                word, docid = make_tuple(key)   # Parse the tuple string
+                self.emit(word, (docid, tf, 1))
+
+    if __name__ == '__main__':
+        mapper = DocumentTermsMapper(sys.stdin)
+        mapper.map()
+
+And the second reducer is a more complex sum reducer along with a value and key space change in preparation for a map-only job that computes TF-IDF.
+
+    import sys
+
+    from framework import Reducer
+    from operator import itemgetter
+    from ast import literal_eval as make_tuple
+
+    class DocumentTermsReducer(Reducer):
+
+        def reduce(self):
+            for key, values in self:
+                terms = sum(int(item[2]) for item in values)
+                for docid, tf, num in values:
+                    self.emit((key, docid), (int(tf), terms))
+
+        def __iter__(self):
+            for current, group in super(DocumentTermsReducer, self).__iter__():
+                yield current, map(make_tuple, [item[1] for item in group])
+
+    if __name__ == '__main__':
+        reducer = DocumentTermsReducer(sys.stdin)
+        reducer.reduce()
+
+Finally the Mapper for the TF-IDF is as follows:
+
+    import sys
+    import math
+
+    from framework import Mapper
+    from ast import literal_eval as make_tuple
+
+    class TFIDFMapper(Mapper):
+
+        def __init__(self, *args, **kwargs):
+            self.N = kwargs.pop("documents")
+            super(TFIDFMapper, self).__init__(*args, **kwargs)
+
+        def map(self):
+            for line in self:
+                key, val = map(make_tuple, line.split(self.sep))
+                tf, n = (int(x) for x in val)
+            if n > 0:
+                idf = math.log(self.N/n)
+                self.emit(key, idf*tf)
+
+    if __name__ == '__main__':
+        mapper = TFIDFMapper(sys.stdin, documents=41)
+        mapper.map()
+
+The Reducer is just an IdentityReducer because this is a map-only job.
+
+    import sys
+
+    from operator import itemgetter
+    from framework import Reducer
+
+    class IdentityReducer(Reducer):
+
+        def reduce(self):
+            for current, group in self:
+                for item in group:
+                    self.emit(current, item[1])
+
+    if __name__ == '__main__':
+        reducer = IdentityReducer(sys.stdin)
+        reducer.reduce()
+
+To execute this code on Hadoop you would use the following commands:
 
     $ hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-*.jar \
         -input reuters \
-        -output reuters-tfidf \
-        -mapper mapper.py \
-        -reducer reducer.py \
-        -file mapper.py \
-        -file reducer.py \
-        -file stopwords.txt
+        -output reuters_term_frequency \
+        -mapper mapper1.py \
+        -reducer reducer1.py \
+        -file mapper1.py \
+        -file reducer1.py \
+        -file stopwords.txt \
+        -file framework.py
+
+    $ hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-*.jar \
+        -input reuters_term_frequency \
+        -output reuters_document_term_frequency \
+        -mapper mapper2.py \
+        -reducer reducer2.py \
+        -file mapper2.py \
+        -file reducer2.py \
+        -file framework.py
+
+    $ hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-*.jar \
+        -input reuters_document_term_frequency \
+        -output reuters_tfidf \
+        -mapper mapper3.py \
+        -reducer reducer3.py \
+        -file mapper3.py \
+        -file reducer3.py \
+        -file framework.py
+
+Note that you would probably use a scheduler like Oozie to put this together in real life.
 
 The output should be similar to:
 
@@ -129,11 +230,131 @@ The output should be similar to:
 For an answer implemented with Spark, you were required to submit the following:
 
 1. A Python file with the spark application, submittable using `spark-submit`
-2. A test file containing the output of your analysis (this will be the part-00000 file on HDFS when you execute it on the cluster).
+2. A test file containing the output of your analysis for the specific words identified in the problem assignment.
 
 The Python Spark application is as follows:
 
+    import re
+    import math
 
+    from operator import add
+    from functools import partial
+    from pyspark import SparkConf, SparkContext
+
+    APP_NAME  = "TF-IDF of Reuters Corpus"
+    N_DOCS    = 41
+
+    # Regular expressions
+    header    = re.compile(r'^=+\s(\d+)\s=+$', re.I)
+    tokenizer = re.compile(r'\W+')
+
+    def chunk(args):
+        """
+        Splits a text file into smaller document id, text pairs.
+        """
+
+        def chunker(text):
+            """
+            Inner generator function.
+            """
+            docid    = None
+            document = []
+            for line in text.split("\n"):
+                # Check to see if we are on a header line.
+                hdr = header.match(line)
+                if hdr is not None:
+                    # If we are on a current document, emit it.
+                    if docid is not None:
+                        yield (docid, document)
+
+                    # If so, extract the document id and reset the document.
+                    docid = hdr.groups()[0]
+                    document = []
+                    continue
+                else:
+                    document.append(line)
+
+        fname, text = args
+        return list(chunker(text))
+
+
+    def tokenize(document, stopwords=None):
+        """
+        Tokenize and return (docid, word) pairs with a counter.
+        """
+
+        def inner_tokenizer(lines):
+            """
+            Inner generator for word tokenization.
+            """
+            for line in lines:
+                for word in re.split(tokenizer, line):
+                    if word and word not in stopwords.value and word.isalpha():
+                        yield word
+
+        docid, lines = document
+        return [
+            ((docid, word), 1) for word in inner_tokenizer(lines)
+        ]
+
+
+    def term_frequency(v1, v2):
+        """
+        Compute the term frequency by splitting the complex value.
+        """
+        docid, tf, count1   = v1
+        _docid, _tf, count2 = v2
+        return (docid, tf, count1 + count2)
+
+
+    def tfidf(args):
+        """
+        Compute the TF-IDF given a ((word, docid), (tf, n)) argument.
+        """
+        (key, (tf, n)) = args
+        if n > 0:
+            idf = math.log(N_DOCS/n)
+            return (key, idf*tf)
+
+    def main(sc):
+        """
+        Primary analysis mechanism for Spark application
+        """
+
+        # Load stopwords from the dataset
+        with open('stopwords.txt', 'r') as words:
+            stopwords = frozenset([
+                word.strip() for word in words.read().split("\n")
+            ])
+
+        # Broadcast the stopwords across the cluster
+        stopwords = sc.broadcast(stopwords)
+
+        # Load the corpus as whole test files and chunk them.
+        corpus  = sc.wholeTextFiles('reuters.txt').flatMap(chunk)
+
+        # Phase one: tokenize and sum (word, docid), count pairs (document frequency).
+        docfreq = corpus.flatMap(partial(tokenize, stopwords=stopwords))
+        docfreq = docfreq.reduceByKey(add)
+
+        # Phase two: compute term frequency then perform keyspace change.
+        trmfreq = docfreq.map(lambda (key, tf): (key[1], (key[0], tf, 1)))
+        trmfreq = trmfreq.reduceByKey(term_frequency)
+        trmfreq = trmfreq.map(lambda (word, (docid, tf, n)): ((word, docid), (tf, n)))
+
+        # Phase three: comptue the tf-idf of each word, document pair.
+        tfidfs  = trmfreq.map(tfidf)
+
+        # Write the results out to disk
+        tfidfs.saveAsTextFile("reuters-tfidfs")
+
+    if __name__ == '__main__':
+        # Configure Spark
+        conf = SparkConf().setAppName(APP_NAME)
+        sc   = SparkContext(conf=conf)
+
+        # Execute Main functionality
+        main(sc)
 
 To execute this code on Hadoop you would use the following command:
 
@@ -145,97 +366,100 @@ The output should be similar to above.
 
 In this question you were required to submit the following:
 
-1. A Python file with the mapper code
-2. A Python file with the reducer code
-3. A test file containing the output of your analysis
+1. A Python file with the mapper code.
+2. A Python file with the reducer code.
+3. A text file containing the results for the airports mentioned above.
 
-The Python mapper is as follows:
+The stripes mapper is as follows:
 
-    #!/usr/bin/env python
+    import csv
+    import sys
 
-    import math
-    import dumbo
+    from framework import Mapper
 
-    class DelayMapper(object):
+    class DelayStatsMapper(Mapper):
 
-        SEP = '\t'
+        def __init__(self, delimiter="\t", quotechar='"', **kwargs):
+            super(DelayStatsMapper, self).__init__(**kwargs)
+            self.delimiter = delimiter
+            self.quotechar = quotechar
 
-        def __call__(self, key, value):
-            value = value.split(self.SEP)
-            try:
-                airport = value[6]
-                delay   = float(value[15])
-                if airport and delay:
-                    yield (airport, delay)
-            except:
-                pass
+        def map(self):
+            for row in self:
+                try:
+                    airport = row[6]
+                    delay   = float(row[15])
+                except ValueError:
+                    # Could not parse the delay, which is zero.
+                    delay   = 0.0
 
-    class StatsCombiner(object):
+                self.emit(airport, (1, delay, delay ** 2))
 
-        def __call__(self, key, values):
-
-            count   = 0
-            delay   = 0.0
-            square  = 0.0
-            minimum = None
-            maximum = None
-
-            for value in values:
-                count  += 1
-                delay  += value
-                square += value ** 2
-
-                if minimum is None or value < minimum:
-                    minimum = value
-
-                if maximum is None or value > maximum:
-                    maximum = value
-
-            yield (key, (count, delay, square, minimum, maximum))
-
-    class StatsReducer(object):
-
-        def __call__(self, key, values):
-
-            count   = 0
-            delay   = 0.0
-            square  = 0.0
-            minimum = None
-            maximum = None
-
-            for value in values:
-                count  += value[0]
-                delay  += value[1]
-                square += value[2]
-
-                if minimum is None or value[3] < minimum:
-                    minimum = value[3]
-
-                if maximum is None or value[4] > maximum:
-                    maximum = value[4]
-
-            mean   = delay / float(count)
-            stddev = math.sqrt((square-(delay**2)/count)/count-1)
-
-            yield (key, (count, mean, stddev, minimum, maximum))
+        def read(self):
+            """
+            Parse the tab delimited flights dataset with the CSV module.
+            """
+            reader = csv.reader(self.infile, delimiter=self.delimiter)
+            for row in reader:
+                yield row
 
     if __name__ == '__main__':
-        dumbo.run(DelayMapper, StatsReducer, combiner=StatsCombiner)
+        mapper = DelayStatsMapper(infile=sys.stdin)
+        mapper.map()
 
-The Python reducer is simply a sum reducer:
+And the statistical aggregation reducer is as follows:
 
+    import sys
+    import math
 
+    from framework import Reducer
+    from ast import literal_eval as make_tuple
+
+    class StatsReducer(Reducer):
+
+        def reduce(self):
+            for key, values in self:
+
+                count   = 0
+                delay   = 0.0
+                square  = 0.0
+                minimum = None
+                maximum = None
+
+                for value in values:
+                    count  += value[0]
+                    delay  += value[1]
+                    square += value[2]
+
+                    if minimum is None or value[1] < minimum:
+                        minimum = value[1]
+
+                    if maximum is None or value[1] > maximum:
+                        maximum = value[1]
+
+                mean   = delay / float(count)
+                stddev = math.sqrt((square-(delay**2)/count)/count-1)
+
+                self.emit(key, (count, mean, stddev, minimum, maximum))
+
+        def __iter__(self):
+            for current, group in super(StatsReducer, self).__iter__():
+                yield current, map(make_tuple, [item[1] for item in group])
+
+    if __name__ == '__main__':
+        reducer = StatsReducer(infile=sys.stdin)
+        reducer.reduce()
 
 To execute this code on Hadoop you would use the following command:
 
     $ hadoop jar $HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-*.jar \
-        -input ontime \
-        -output ontime-stats \
+        -input ontime_flights.tsv \
+        -output airport_delay_stats \
         -mapper mapper.py \
         -reducer reducer.py \
         -file mapper.py \
         -file reducer.py \
-        -file params.txt
+        -file framework.py
 
 The output should be similar to:
 
@@ -253,12 +477,86 @@ The output should be similar to:
 
 For an answer implemented with Spark, you were required to submit the following:
 
-1. A Python file with the spark application, submittable using `spark-submit`
-2. A test file containing the output of your analysis (this will be the part-00000 file on HDFS when you execute it on the cluster).
+1. A Python file with the spark application, submittable using `spark-submit`.
+2. A text file containing the results for the airports mentioned above.
 
 The Python Spark application is as follows:
 
+    import sys
+    import csv
+    import math
 
+    from functools import partial
+    from StringIO import StringIO
+    from pyspark import SparkConf, SparkContext
+
+    APP_NAME = "Summary Statistics of Arrival Delay by Airport"
+
+    def counters(line):
+        """
+        Splits the line on a CSV and parses it into the key and summary counters.
+        A counter is as follows: (count, total, square, minimum, maximum).
+        """
+        reader = csv.reader(StringIO(line), delimiter='\t')
+        row = reader.next()
+
+        airport = row[6]
+
+        try:
+            delay = float(row[15])
+        except ValueError:
+            delay = 0.0
+
+        return (airport, (1, delay, delay ** 2, delay, delay))
+
+    def aggregation(item1, item2):
+        """
+        For an (airport, counters) item, perform summary aggregations.
+        """
+        count1, total1, squares1, min1, max1 = item1
+        count2, total2, squares2, min2, max2 = item2
+
+        minimum = min((min1, min2))
+        maximum = max((max1, max2))
+        count   = count1 + count2
+        total   = total1 + total2
+        squares = squares1 + squares2
+
+        return (count, total, squares, minimum, maximum)
+
+    def summary(aggregate):
+        """
+        Compute summary statistics from aggregation.
+        """
+        (airport, (count, total, square, minimum, maximum)) = aggregate
+
+        mean   = total / float(count)
+        stddev = math.sqrt((square-(total**2)/count)/count-1)
+
+        return (airport, (count, mean, stddev, minimum, maximum))
+
+    def main(sc):
+        """
+        Primary analysis mechanism for Spark application
+        """
+
+        # Load data set and parse out statistical counters
+        delays = sc.textFile('ontime_flights/ontime_flights.tsv').map(counters)
+
+        # Perform summary aggregation by key
+        delays = delays.reduceByKey(aggregation)
+        delays = delays.map(summary)
+
+        # Write the results out to disk
+        delays.saveAsTextFile("delays-summary")
+
+    if __name__ == '__main__':
+        # Configure Spark
+        conf = SparkConf().setAppName(APP_NAME)
+        sc   = SparkContext(conf=conf)
+
+        # Execute Main functionality
+        main(sc)
 
 
 To execute this code on Hadoop you would use the following command:
